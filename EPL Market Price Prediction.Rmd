@@ -1,0 +1,266 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggthemes)
+library(forcats)
+library(stargazer)
+df <- read_csv("D:/Projects/EPL Player Market Value Prediction/epldata_final.csv")
+
+df <- df %>% mutate(position_cat= as.factor(position_cat),
+                    region=as.factor(region),
+                    club_id=as.numeric(as.factor(club)),
+                    age_cat = as.factor(age_cat),
+                    big_club=ifelse(club_id %in% c(1,5,10,11,12,17),1,0))
+                    
+                    
+
+ageCat <- function(age){
+  if (age < 22)return(1)
+  else if( age < 25)return(2)
+  else if( age < 28)return(3)
+  else if( age < 30)return(4)
+  else if( age < 32)return(5)
+  else return(6)
+}
+df <- df %>%rowwise() %>% mutate(age_cat=ageCat(age))
+df <- df %>% mutate(age_cat = as.factor(age_cat))
+
+df <- transform(df,age_category=cut(age,breaks=c(16,21,25,28,31,38),labels = c("17-21","22-25",
+                                                                               "26-28","29-31","32-38")))
+
+
+#df %>% select(age_cat) %>% View()
+df1 <- filter(df,!club_id %in% c(3,8,13)) %>%
+  filter(new_foreign == 0)
+  #filter(name!="Wayne Rooney" & name!= "Paul Pogba") %>%
+  #filter(market_value >=1)
+#df1$page_views <- log(df1$page_views)
+
+```
+
+## Introduction
+
+The aim of this project is to see if there's a relationship between a player's popularity and his market value, given the difficult nature of using summary statistics for this task. 
+
+## Some Preliminary Analysis
+
+### Who are the most valuable players in the EPL?
+
+```{r most_valuable,echo=FALSE}
+temp <- df %>% arrange(desc(market_value))
+knitr::kable(head(temp,n=6))
+```
+
+
+### Who are the most popular players?
+```{r most_popular,echo=FALSE}
+temp <- df %>% arrange(desc(page_views))
+knitr::kable(head(temp,n=6))
+```
+
+### Distribution of Market Value
+
+```{r dist_mv,echo=FALSE,warning=FALSE}
+ggplot(df,aes(market_value))+geom_histogram(binwidth = 2.5)
+```
+
+Clearly not a normal distribution, but this was expected. Teams tend to have few elite players, and a large number of low + mid value players in their *squads*. 
+### Distribution of popularity
+
+```{r dist_pop,echo=FALSE,warning=FALSE}
+ggplot(df,aes(page_views))+geom_histogram(binwidth = 50)
+```
+
+#### Top 6 vs the rest
+
+```{r dist_pop_comp,echo=FALSE,warning=FALSE}
+ggplot(df,aes(page_views))+geom_histogram(binwidth = 50)+facet_wrap(~big_club)
+```
+
+The top 6 clubs seem to have a spread of players popularity. Also, Wayne Rooney is at Everton now.
+
+## Detailed Analysis
+
+There seems to be evidence of a player's market value being correlated with how popular he is. This is interesting because *ability* and *performance* are notoriously difficult to quantify in football. It varies with the position, the manager's tactics, the opposition, the league, the ability of your own teammates, and so on. Consequently, valuing a player is very hard to do, though it has to be done anyway.  
+Websites like WhoScored have a score for each player for each match, and Fantasy Premier League places a value on each player's head. It would be interesting to see if *popularity* can be used as a basic proxy for *ability*
+
+
+### FPL Valuation
+
+```{r fpl_value,echo=FALSE,warning=FALSE}
+ df %>% filter(!club_id %in% c(3,8,13)) %>%
+   filter(age < 35) %>%
+  filter(fpl_points!=0) %>%
+   ggplot(aes(fpl_value,market_value,color=age))+geom_jitter(alpha=0.5,size=2)
+ 
+```
+
+There seems to be nice agreement between the FPL value and transfermrkt value, despite the fact that FPL valuation is decidedly shorter term, so age would be less of a factor
+```{r fpl_value2,echo=FALSE,warning=FALSE}
+ 
+ df %>% #filter(!club_id %in% c(3,8,13)) %>%
+  #filter(age < 35) %>%
+  filter(fpl_points!=0) %>%
+  mutate(val_ratio=market_value/fpl_value) %>% 
+  group_by(age_category,position_cat) %>%
+  summarize(val_ratio=mean(val_ratio)) %>%
+  mutate(position_cat=fct_recode(position_cat,"Forward"="1","Midfield"="2","Defence"="3",
+                                 "Goalkeeper"="4")) %>% 
+  ggplot(aes(age_category,val_ratio,fill=position_cat))+geom_bar(stat="identity") + facet_wrap(~position_cat) +
+  theme_hc() +ylab("Market Value / FPL Value") + xlab("Age") 
+
+ 
+```
+
+
+
+### Market Value with Age
+
+
+```{r mv_age,echo=FALSE,warning=FALSE}
+  
+df %>%
+  ggplot(aes(age,market_value))+geom_jitter(alpha=0.25,size=3)
+```
+
+The high value players are clustered around the age of 24-32, peaking at about 27. It's important to note that this is in no way a linear relationship, which is why I use age categories in the regression model that follows.
+
+### Who's stocking up at which position?
+
+
+```{r top6_pos,echo=FALSE,warning=FALSE}
+df %>% 
+  filter(club_id %in% c(1,5,10,11,12,17)) %>%
+  group_by(club,position_cat) %>%
+  summarise(value=sum(market_value)) %>%
+  ungroup() %>% 
+  mutate(position_cat=fct_recode(position_cat,"Forward"="1","Midfield"="2","Defence"="3",
+                                 "Goalkeeper"="4")) %>%
+  ggplot(aes(club,value,fill=position_cat))+geom_bar(stat = "identity") +facet_wrap(~position_cat)+
+  theme(axis.text.x = element_text(angle = 60,hjust=0.6,vjust=0.5))
+
+```
+
+
+
+## Popularity as a proxy for Ability
+
+Ability is difficult to measure and compare through performance indicators. Assuming **FPL valuation** is a fair measure of ability. While this may not be perfect, we should still be able to se a relationship between ability and popularity.
+
+```{r pop_ability,echo=FALSE,warning=FALSE}
+ggplot(df1,aes(fpl_value,page_views))+geom_jitter()
+
+
+```
+
+There seems to be a nice, linear relationship between FPL valuation and popularity, with a few notable exceptions.
+## Regression Model
+
+
+The main aim is to see whether market value can be determined using popularity as a proxy for ability. A player's market value can intuitively be represented as - 
+
+> market value ~ ability + position + age  
+
+
+In the model, I control for 1-4, but not for 5 and 6. Both 5 and 6 would require extensive work identifying breakouts and long-term injuries, which might be useful future additions to the model.
+
+For factors 1 - 4:    
+
+1. Retrieved the nationality of each player, and put them into 4 buckets:  
+
+  + 1 for England   
+  
+  + 2 for EU (Brexit made this a natural classification)   
+  
+  + 3 for Americas   
+  
+  + 4 for Rest of World   
+  
+A new column called `region` was made, as a factor with 4 levels.  
+
+
+2. Included an interaction term for page views and position category.   
+
+
+3. Marked the new signings of 2016/17, and interacted that with page views.  
+
+4. A column `big_club` was created comprising of United, City, Chelsea, Arsenal, Liverpool and Tottenham. This was interacted with page views as well.  
+
+Apart from these interactions, age is also included as a categorical variable (due to its non-linear relationship with market value).
+
+### Dataset Modifications
+
+1. sqrt values of `market_value` are taken, because `market_value` is right-tail heavy, which could lead to heteroscedasticity.
+
+2. However, this leads to the relationship between `sqrt(market_value)` and `page_views` looking like this - 
+
+```{r lmv_pv,echo=FALSE,warning=FALSE}
+ggplot(df1,aes(y=sqrt(market_value),x=page_views)) +geom_jitter()
+```
+
+
+```{r lmv_lpv,echo=FALSE,warning=FALSE}
+ggplot(df1,aes(y=sqrt(market_value),x=sqrt(page_views))) +geom_jitter()
+```
+
+This looks roughly linear.   
+
+Now applying a multiple linear regression model yields the following R^2^ value - 
+
+```{r results='asis',echo=FALSE,warning=FALSE}
+df1 <- df %>% 
+  filter(!club_id %in% c(3,8,13)) %>%
+  filter(new_foreign == 0) 
+df1$page_views <- sqrt(df1$page_views)
+model <- lm(sqrt(market_value) ~   page_views+age_category:position_cat+ 
+                            page_views:region+page_views:big_club+new_signing:page_views, data=df1)
+#summary(model)
+print(summary(model))
+#stargazer::stargazer((model),type = 'html')
+```
+
+
+
+R^2^ of over 70% ! Further, the coefficient of `page_views` is extremely significant. Clearly, there is a linear relationship between `sqrt(market_value)` and `sqrt(page_views)`.  
+
+
+### What can residual plots tell us?
+
+The residual plots should be able to tell us whether we have a heteroscedasticity problem in our data.
+
+```{r resid, echo=FALSE,warning=FALSE}
+res <- as.data.frame(resid(model))
+#df1 <- df1 %>% mutate(mv_diff = res$`resid(model)`)
+#df1 %>% arrange(mv_diff) %>% View()
+df1$error <- res$`resid(model)`
+df1 <- df1 %>% mutate(model_mv=sqrt(market_value)-error)
+df1$model_mv <- (df1$model_mv)^2
+#ggplot(res,aes(resid(model)))+geom_histogram()
+ggplot(df1,aes(model_mv,error))+geom_point()
+ggplot(df1,aes(sample=error))+geom_qq()
+```
+
+The residual plot seems to have randomly distributed errors, and the qq plot confirms that they are normally distributed.
+
+### EPL Popularity
+
+An interesting by-product is to see how popular the Premier League is, compared to other leagues. Due to the small number of inward-transfers from foreign leagues, this remains a rough method. However, the differences are large enough to be greater than just noise.
+
+```{r epl_pop,echo=FALSE,message=FALSE,warning=FALSE}
+test <- df %>%
+  filter(new_foreign==1)# %>%
+  
+test$page_views <- sqrt(test$page_views)
+test$predicted_mv <- round(predict(model,test)^2,1)
+temp <- test %>% select(name,market_value,predicted_mv)
+knitr::kable(temp)
+```
+
+
+The model works because it has *generally undervalued* players from other leagues. The reasoning is thus - a 20 million player in the EPL gets more hits than a 20 million player in Ligue 1. Because of this, the *value* of **each** page view is far lower in the EPL. But since the model is built using EPL data, the coefficient of page views is derived from EPL. Consequently, foreign players from less popular leagues are undervalued.   
